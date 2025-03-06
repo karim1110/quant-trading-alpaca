@@ -22,45 +22,56 @@ assets = ['AAPL', 'MSFT', 'GOOGL', 'AMZN']
 
 timeframe = '1Min'
 order_interval = 60  # seconds between iterations
-startup_period_minutes = 30  # Accumulate data for 30 minutes before trading
 
-def accumulate_data():
-    """Collect market data for all assets for a set period so we have enough history for our strategy."""
-    print(f"Accumulating data for {startup_period_minutes} minutes for assets: {assets}")
-    start_time = datetime.datetime.utcnow()
-    while (datetime.datetime.utcnow() - start_time).total_seconds() < startup_period_minutes * 60:
-        now = datetime.datetime.utcnow().replace(microsecond=0)
-        current_time = now.isoformat() + "Z"
-        for symbol in assets:
-            latest_price = data_api.get_latest_price(symbol, timeframe=timeframe)
-            if latest_price is not None:
-                print(f"{current_time} - Latest price for {symbol}: {latest_price}")
-                # Create a dummy OHLCV row. In production, store complete OHLCV data.
-                dummy_data = pd.DataFrame({
-                    'open': [latest_price],
-                    'high': [latest_price],
-                    'low': [latest_price],
-                    'close': [latest_price],
-                    'volume': [0]
-                }, index=[current_time])
-                storage.store_data(symbol, dummy_data)
-            else:
-                print(f"No data retrieved for {symbol} this cycle.")
-        time.sleep(order_interval)
-    print("Data accumulation complete.")
+def fetch_initial_data():
+    """
+    Immediately fetch historical data for each asset over a defined period (e.g., last 60 minutes)
+    so that your strategy has data to work with right away.
+    """
+    print("Fetching historical data for assets:", assets)
+    end_time = datetime.datetime.utcnow().replace(microsecond=0)
+    # For example, fetch the last 60 minutes of data
+    start_time = end_time - datetime.timedelta(minutes=60)
+    start_iso = start_time.isoformat() + "Z"
+    end_iso = end_time.isoformat() + "Z"
+    
+    for symbol in assets:
+        df = data_api.get_historical_data(symbol, timeframe, start_iso, end_iso)
+        if not df.empty:
+            print(f"{symbol}: Fetched data from {start_iso} to {end_iso}")
+            storage.store_data(symbol, df)
+        else:
+            print(f"{symbol}: No historical data fetched.")
+    print("Historical data fetch complete.")
 
 def run_trading_loop():
-    """After accumulating data, run the trading loop over each asset."""
+    """After fetching initial data, run the trading loop over each asset."""
     print("Starting trading loop. Press Ctrl+C to exit.")
     try:
         while True:
             now = datetime.datetime.utcnow().replace(microsecond=0)
             current_time = now.isoformat() + "Z"
+            # Retrieve latest prices for all assets using get_latest_bars (or individually)
+            latest_prices = data_api.get_latest_prices(assets, feed='iex')
+            
             for symbol in assets:
-                latest_price = data_api.get_latest_price(symbol, timeframe=timeframe)
+                latest_price = latest_prices.get(symbol, None)
                 print(f"{current_time} - Latest price for {symbol}: {latest_price}")
                 
-                # Retrieve historical data for the asset from SQLite
+                # Create a dummy OHLCV row for the latest price
+                if latest_price is not None:
+                    new_data = pd.DataFrame({
+                        'open': [latest_price],
+                        'high': [latest_price],
+                        'low': [latest_price],
+                        'close': [latest_price],
+                        'volume': [0],
+                        'trade_count': [0],
+                        'vwap': [latest_price]
+                    }, index=[current_time])
+                    storage.store_data(symbol, new_data)
+                
+                # Retrieve updated historical data from SQLite
                 historical_data = storage.get_data(symbol)
                 if historical_data.empty:
                     print(f"Historical data not available for {symbol}. Skipping strategy evaluation.")
@@ -88,7 +99,7 @@ def run_trading_loop():
         print("Done.")
 
 if __name__ == '__main__':
-    # Phase 1: Accumulate market data for each asset
-    accumulate_data()
-    # Phase 2: Start trading using the accumulated data
+    # Phase 1: Immediately fetch historical data for each asset
+    fetch_initial_data()
+    # Phase 2: Start trading using the fetched historical data
     run_trading_loop()
